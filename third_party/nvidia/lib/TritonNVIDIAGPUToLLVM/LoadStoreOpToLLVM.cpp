@@ -254,6 +254,7 @@ struct LoadOpConversion : public ConvertOpToLLVMPattern<triton::LoadOp>,
                      .o("L1::evict_last",
                         op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
                      .o("L1::cache_hint", hasL2EvictPolicy)
+                     .o("L2::256B")
                      .v(nWords)
                      .b(width);
 

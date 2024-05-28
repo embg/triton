@@ -329,6 +329,7 @@ struct PTXCpAsyncLoadInstr : PTXInstrBase<PTXCpAsyncLoadInstr> {
     o(triton::stringifyCacheModifier(modifier).str());
     o("shared");
     o("global");
+    o("L2::256B");
   }
 };
 
