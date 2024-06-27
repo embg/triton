@@ -101,7 +101,7 @@ def run_bench(shape, direction):
     output = convert_fp8_type(output)
 
     # Run benchmark and compute Tflops
-    ms = tt_testing.do_bench(lambda: tt_fn(input_, weight, output), )
+    ms = tt_testing.do_bench(lambda: tt_fn(input_, weight, output), warmup=1, rep=1)
     tflops = (2 * m * n * k) / 1e12
     sec = ms / 1e3
     perf_str = f"{tflops / sec:.4f}"
@@ -119,9 +119,6 @@ if __name__ == "__main__":
                 (256, 256, 256),
                 (512, 512, 512),
                 (1024, 1024, 1024),
-                (2048, 2048, 2048),
-                (4096, 4096, 4096),
-                (8192, 8192, 4096),
                 #(10240, 10240, 10240),
                 #(16384, 16384, 16384),
                 #(20480, 20480, 20480),

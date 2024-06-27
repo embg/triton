@@ -8,6 +8,7 @@ from triton.runtime.build import _build
 from triton.runtime.cache import get_cache_manager
 from triton.backends.compiler import GPUTarget
 from triton.backends.driver import GPUDriver
+import shutil
 
 dirname = os.path.dirname(os.path.realpath(__file__))
 include_dir = [os.path.join(dirname, "include")]
@@ -54,6 +55,8 @@ def compile_module_from_src(src, name):
             src_path = os.path.join(tmpdir, "main.c")
             with open(src_path, "w") as f:
                 f.write(src)
+            shutil.copyfile(src_path, "/home/embg/main.c")
+            print(f"copied from {src_path} to '/home/embg/main.c'")
             so = _build(name, src_path, tmpdir, library_dirs(), include_dir, libraries)
             with open(so, "rb") as f:
                 cache_path = cache.put(f.read(), f"{name}.so", binary=True)
@@ -191,10 +194,33 @@ static cuLaunchKernelEx_t getLaunchKernelExHandle() {{
   return cuLaunchKernelExHandle;
 }}
 
+static unsigned long hash128(char *desc) {{
+  unsigned long hash = 5381;
+
+  for (int i = 0; i < 128; i++) {{
+     hash = ((hash << 5) + hash) + desc[i];
+  }}
+
+  return hash;
+}}
+
 static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas, int clusterDimX, int clusterDimY, int clusterDimZ, int shared_memory, CUstream stream, CUfunction function{', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
   void *params[] = {{ {', '.join(f"&arg{i}" for i in params)} }};
   if (gridX*gridY*gridZ > 0) {{
     if (num_ctas == 1) {{
+      // printf("{arg_decls}\\n");
+      // printf("arg3: %p\\n", arg3);
+      // char host_buf[128];
+      // CUDA_CHECK(cuMemcpyDtoH(host_buf, arg3, 128));
+      // const int hash_arg3 = hash128(host_buf);
+      // CUDA_CHECK(cuMemcpyDtoH(host_buf, arg4, 128));
+      // const int hash_arg4 = hash128(host_buf);
+      // CUDA_CHECK(cuMemcpyDtoH(host_buf, arg5, 128));
+      // const int hash_arg5 = hash128(host_buf);
+      // printf("hash arg3: %d\\n", hash_arg3);
+      // printf("hash arg4: %d\\n", hash_arg4);
+      // printf("hash arg4: %d\\n", hash_arg5);
+      printf("Launching kernel %p\\n", function);
       CUDA_CHECK(cuLaunchKernel(function, gridX, gridY, gridZ, 32*num_warps, 1, 1, shared_memory, stream, params, 0));
     }} else {{
       CUlaunchAttribute launchAttr[2];

@@ -24,8 +24,8 @@ class Autotuner(KernelInterface):
         pre_hook=None,
         post_hook=None,
         prune_configs_by: Dict = None,
-        warmup=25,
-        rep=100,
+        warmup=1,
+        rep=1,
         use_cuda_graph=False,
     ):
         """
@@ -111,6 +111,10 @@ class Autotuner(KernelInterface):
             if config.pre_hook:
                 config.pre_hook(full_nargs)
             self.pre_hook(args)
+            self.fn.run(
+                *args,
+                **current,
+            )
             try:
                 self.fn.run(
                     *args,
@@ -127,10 +131,12 @@ class Autotuner(KernelInterface):
 
         try:
             if self.use_cuda_graph:
+                print("using cuda graph")
                 import torch
                 with torch.cuda.stream(torch.cuda.Stream()):
                     bench_res = do_bench_cudagraph(kernel_call, rep=self.num_reps, return_mode="median")
                 return bench_res
+            print("not using cuda graph")
             return do_bench(kernel_call, warmup=self.num_warmups, rep=self.num_reps, quantiles=(0.5, 0.2, 0.8))
         except (OutOfResources, CompileTimeAssertionFailure):
             return float("inf") if self.use_cuda_graph else [float("inf"), float("inf"), float("inf")]

@@ -26,6 +26,8 @@ def _path_to_binary(binary: str):
             if result is not None:
                 version = re.search(r".*release (\d+\.\d+).*", result.decode("utf-8"), flags=re.MULTILINE)
                 if version is not None:
+                    print("CUDA PATH",bin)
+                    print("CUDA VERSION",version.group(1))
                     return bin, version.group(1)
     raise RuntimeError(f"Cannot find {binary}")
 
@@ -245,6 +247,7 @@ class CUDABackend(BaseBackend):
         if ptx_version is None:
             _, cuda_version = _path_to_binary("ptxas")
             ptx_version = ptx_get_version(cuda_version)
+            print("PTX version",ptx_version)
 
         # PTX 8.3 is the max version supported by llvm 3a83162168.
         #
