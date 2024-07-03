@@ -116,7 +116,7 @@ arbitrary LLVM version.
 
     - Do a local build.
     - Get the full path to the `compile_commands.json` file produced by the build:
-      `find python/build -name 'compile_commands.json | xargs readlink -f'`
+      `find python/build -name 'compile_commands.json' | xargs readlink -f`
     - In vscode, install the
       [C/C++
       extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode.cpptools),
