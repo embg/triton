@@ -394,7 +394,7 @@ def tma_setup(a, b, c, M, N, K):
     return (desc_a, desc_b, desc_c)
 
 
-def matmul_tma_persistent(a, b, c, desc_a, desc_b, desc_c, override = False):
+def matmul_tma_persistent(a, b, c, desc_a, desc_b, desc_c, override = False, print_hash = True):
     # Check constraints.
     assert a.shape[1] == b.shape[1], "Incompatible dimensions"  # b is transposed
     assert a.dtype == b.dtype, "Incompatible dtypes"
@@ -420,7 +420,8 @@ def matmul_tma_persistent(a, b, c, desc_a, desc_b, desc_c, override = False):
             num_stages=configs[dtype]["num_stages"],  #
             num_warps=configs[dtype]["num_warps"],  #
         )
-        print(f"override hash: {override_bin.metadata.hash}")
+        if print_hash:
+            print(f"override hash: {override_bin.metadata.hash}")
     else:
         matmul_kernel_tma_persistent[grid](
             desc_a, desc_b, desc_c,  #
@@ -462,19 +463,6 @@ def torch_matmul(a, b):
                       {"bytes": bytes_per_elem * (M * K + N * K), flops_str: 2. * M * N * K}):
         c = torch.matmul(a, b.T)
     return c
-
-
-def bench(K, dtype, reps=10):
-    M = 8192
-    N = 8192
-    a = torch.randn((M, K), device="cuda", dtype=torch.float16).to(dtype)
-    b = torch.randn((K, N), device="cuda", dtype=torch.float16).to(dtype)
-    b = b.T.contiguous()
-    c = torch.zeros((M, N), device=a.device, dtype=dtype)
-
-    desc_a, desc_b, desc_c = tma_setup(a, b, c, M, N, K)
-    
-    matmul_tma_persistent(a, b, c, desc_a, desc_b, desc_c)
 
 
 def validate(M, N, K, dtype):
@@ -533,7 +521,7 @@ if __name__ == "__main__":
         print("This example requires CUDA with fp8 support.")
         exit(1)
 
-    dtype = torch.float8_e4m3fn if args.prec == 'fp8' else torch.float16
+    dtype = torch.float16
 
     if args.K and args.K_range is None:
         args.K_range = [args.K, args.K]
@@ -542,9 +530,44 @@ if __name__ == "__main__":
     torch.manual_seed(0)
 
     validate(32, 32, 32, dtype)
-    validate(8192, 8192, 512, dtype)
+    validate(2048, 2048, 512, dtype)
+        
+    bench_configs = [
+        triton.testing.Benchmark(
+            x_names=["K"],
+            x_vals=[i for i in range(args.K_range[0], args.K_range[1] + 1, args.K_step)],
+            line_arg="provider",
+            line_vals=["original", "override"],
+            line_names=["original", "override"],
+            ylabel="units",
+            plot_name="foobar",
+            args={},
+            y_log=False
+        )
+    ]
+    
+    @triton.testing.perf_report(bench_configs)
+    def benchmark(K, provider):
+        M = 4096
+        N = 4096
+        a = torch.randn((M, K), device="cuda", dtype=torch.float16).to(dtype)
+        b = torch.randn((K, N), device="cuda", dtype=torch.float16).to(dtype)
+        b = b.T.contiguous()
+        c = torch.zeros((M, N), device=a.device, dtype=dtype)
+        desc_a, desc_b, desc_c = tma_setup(a, b, c, M, N, K)
+        
+        if provider == "original":
+            ms = triton.testing.do_bench(
+                lambda: matmul_tma_persistent(a, b, c, desc_a, desc_b, desc_c, override = False, print_hash = False),
+                return_mode = "median", rep = 500
+            )
+        if provider == "override":
+            ms = triton.testing.do_bench(
+                lambda: matmul_tma_persistent(a, b, c, desc_a, desc_b, desc_c, override = True, print_hash = False),
+                return_mode = "median", rep = 500
+            )
 
-    proton.start("matmul", hook="triton")
-    for K in range(args.K_range[0], args.K_range[1] + 1, args.K_step):
-        bench(K, dtype)
-    proton.finalize()
+        return ms, ms, ms
+    
+    benchmark.run(show_plots=True, print_data=True, save_path=".")
+        
