@@ -321,19 +321,22 @@ class Mark:
             ax = plt.subplot()
             # Plot first x value on x axis if there are multiple.
             first_x = x_names[0]
+            handles = []
             for i, y in enumerate(bench.line_names):
+                print("line",i,y)
                 y_min, y_max = df[y + '-min'], df[y + '-max']
                 col = bench.styles[i][0] if bench.styles else None
                 sty = bench.styles[i][1] if bench.styles else None
-                ax.plot(df[first_x], df[y], label=y, color=col, ls=sty)
+                handles.append(ax.plot(df[first_x], df[y], label=y, color=col, ls=sty)[0])
                 if not y_min.isnull().all() and not y_max.isnull().all():
                     y_min = y_min.astype(float)
                     y_max = y_max.astype(float)
                     ax.fill_between(df[first_x], y_min, y_max, alpha=0.15, color=col)
-            ax.legend()
+            print("num_handles", len(handles))
+            ax.legend(handles=handles)
             ax.set_xlabel(bench.xlabel or first_x)
             ax.set_ylabel(bench.ylabel)
-            # ax.set_title(bench.plot_name)
+            ax.set_title(bench.plot_name)
             ax.set_xscale("log" if bench.x_log else "linear")
             ax.set_yscale("log" if bench.y_log else "linear")
             if show_plots:

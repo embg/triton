@@ -31,5 +31,5 @@ def create_2d_tma_descriptor(ptr, dim1, dim0, block_dim1, block_dim0, element_si
     # TMA cache is not being flushed in between dispacthes, therefore we should
     # manually flush the cache every time we create a new TMA descriptor to make
     # sure the following dispatch don't use stale cache when accessing TMA.
-    flush_TMA_cache[(1, )](gpu_desc, num_warps=1)
+    # flush_TMA_cache[(1, )](gpu_desc, num_warps=1)
     return gpu_desc

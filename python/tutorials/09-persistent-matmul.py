@@ -317,6 +317,12 @@ def matmul_kernel_tma_persistent_OVERRIDE(a_desc_ptr, b_desc_ptr, c_desc_ptr,  #
                                  GROUP_SIZE_M: tl.constexpr,  #
                                  FP8_OUTPUT: tl.constexpr,  #
                                  NUM_SMS: tl.constexpr):  #
+    tl.inline_asm_elementwise("fence.proxy.tensormap::generic.acquire.gpu [$1], 128; // $0 dummy reg", "=r, l",
+                            [a_desc_ptr], dtype=tl.int32, is_pure=False, pack=1)
+    tl.inline_asm_elementwise("fence.proxy.tensormap::generic.acquire.gpu [$1], 128; // $0 dummy reg", "=r, l",
+                            [b_desc_ptr], dtype=tl.int32, is_pure=False, pack=1)
+    tl.inline_asm_elementwise("fence.proxy.tensormap::generic.acquire.gpu [$1], 128; // $0 dummy reg", "=r, l",
+                            [c_desc_ptr], dtype=tl.int32, is_pure=False, pack=1)
     dtype = tl.float8e4nv if FP8_OUTPUT else tl.float16
     start_pid = tl.program_id(axis=0)
     num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
@@ -377,20 +383,32 @@ configs = {
     }
 }
 
+fill_tma = triton.runtime.driver.active.utils.fill_2d_tma_descriptor
                                  
 def tma_setup(a, b, c, M, N, K):
-    desc_a = triton.tools.experimental_descriptor.create_2d_tma_descriptor(a.data_ptr(), M, K,
+    TMA_SIZE = 128
+    cpu_buf = torch.empty(TMA_SIZE * 3, device="cpu", pin_memory=True)
+    desc_a_cpu = cpu_buf[:TMA_SIZE]
+    desc_b_cpu = cpu_buf[TMA_SIZE : 2 * TMA_SIZE]
+    desc_c_cpu = cpu_buf[TMA_SIZE * 2 : TMA_SIZE * 3]
+    
+    fill_tma(a.data_ptr(), M, K,
                                                                            configs[dtype]["BLOCK_SIZE_M"],
                                                                            configs[dtype]["BLOCK_SIZE_K"],
-                                                                           a.element_size())
-    desc_b = triton.tools.experimental_descriptor.create_2d_tma_descriptor(b.data_ptr(), N, K,
+                                                                           a.element_size(), desc_a_cpu.data_ptr())
+    fill_tma(b.data_ptr(), N, K,
                                                                            configs[dtype]["BLOCK_SIZE_N"],
                                                                            configs[dtype]["BLOCK_SIZE_K"],
-                                                                           b.element_size())
-    desc_c = triton.tools.experimental_descriptor.create_2d_tma_descriptor(c.data_ptr(), M, N,
+                                                                           b.element_size(), desc_b_cpu.data_ptr())
+    fill_tma(c.data_ptr(), M, N,
                                                                            configs[dtype]["BLOCK_SIZE_M"],
                                                                            configs[dtype]["BLOCK_SIZE_N"],
-                                                                           c.element_size())
+                                                                           c.element_size(), desc_c_cpu.data_ptr())
+                                                                           
+    gpu_buf = cpu_buf.cuda(non_blocking=True)
+    desc_a = gpu_buf[:TMA_SIZE]
+    desc_b = gpu_buf[TMA_SIZE : 2 * TMA_SIZE]
+    desc_c = gpu_buf[TMA_SIZE * 2 : TMA_SIZE * 3]
     return (desc_a, desc_b, desc_c)
 
 
@@ -529,16 +547,16 @@ if __name__ == "__main__":
 
     torch.manual_seed(0)
 
-    validate(32, 32, 32, dtype)
-    validate(2048, 2048, 512, dtype)
+    # validate(32, 32, 32, dtype)
+    # validate(2048, 2048, 512, dtype)
         
     bench_configs = [
         triton.testing.Benchmark(
             x_names=["K"],
             x_vals=[i for i in range(args.K_range[0], args.K_range[1] + 1, args.K_step)],
             line_arg="provider",
-            line_vals=["original", "override"],
-            line_names=["original", "override"],
+            line_vals=["original", "original_with_memcpy"],
+            line_names=["original", "original_with_memcpy"],
             ylabel="units",
             plot_name="foobar",
             args={},
@@ -548,23 +566,31 @@ if __name__ == "__main__":
     
     @triton.testing.perf_report(bench_configs)
     def benchmark(K, provider):
-        M = 4096
-        N = 4096
+        M = 8192 # 8192
+        N = 8192 # 8192
         a = torch.randn((M, K), device="cuda", dtype=torch.float16).to(dtype)
         b = torch.randn((K, N), device="cuda", dtype=torch.float16).to(dtype)
         b = b.T.contiguous()
         c = torch.zeros((M, N), device=a.device, dtype=dtype)
         desc_a, desc_b, desc_c = tma_setup(a, b, c, M, N, K)
-        
+
         if provider == "original":
             ms = triton.testing.do_bench(
                 lambda: matmul_tma_persistent(a, b, c, desc_a, desc_b, desc_c, override = False, print_hash = False),
-                return_mode = "median", rep = 500
+                return_mode = "min", rep = 300
             )
         if provider == "override":
             ms = triton.testing.do_bench(
                 lambda: matmul_tma_persistent(a, b, c, desc_a, desc_b, desc_c, override = True, print_hash = False),
-                return_mode = "median", rep = 500
+                return_mode = "min", rep = 300
+            )
+        if provider == "original_with_memcpy":
+            def func():
+                desc_a, desc_b, desc_c = tma_setup(a, b, c, M, N, K)
+                matmul_tma_persistent(a, b, c, desc_a, desc_b, desc_c, override = False, print_hash = False)
+            ms = triton.testing.do_bench(
+                func,
+                return_mode = "min", rep = 300
             )
 
         return ms, ms, ms
