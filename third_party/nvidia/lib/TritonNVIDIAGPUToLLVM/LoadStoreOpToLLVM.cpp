@@ -1012,7 +1012,7 @@ struct AsyncTMACopyGlobalToLocalOpConversion
           ptxBuilderTMA.newOperand(adaptor.getDescPtr(), "l")};
       std::string tmaInst =
           "@$0 cp.async.bulk.tensor." + std::to_string(rank) +
-          "d.shared::cluster.global.mbarrier::complete_tx::bytes [$1], [$2, {";
+          "d.shared::cluster.global.mbarrier::complete_tx::bytes.multicast::cluster [$1], [$2, {";
       int operandIdx = 3;
       for (int i = 0; i < rank; i++) {
         Value coord = adaptor.getCoord()[rank - i - 1];
@@ -1027,7 +1027,10 @@ struct AsyncTMACopyGlobalToLocalOpConversion
       }
       operands.push_back(
           ptxBuilderTMA.newOperand(barrierMemObj.getBase(), "r"));
-      tmaInst += "}], [$" + std::to_string(operandIdx++) + "];";
+      tmaInst += "}], [$" + std::to_string(operandIdx++) + "], ";
+      Value ctaMask = rewriter.create<arith::TruncIOp>(loc, i16_ty, adaptor.getCtaMask());
+      operands.push_back(ptxBuilderTMA.newOperand(ctaMask, "h"));
+      tmaInst += "$" + std::to_string(operandIdx++) + ";";
       auto &tma = *ptxBuilderTMA.create<>(tmaInst);
       tma(operands, /*onlyAttachMLIRArgs=*/true);
       ptxBuilderTMA.launch(rewriter, loc, voidTy);

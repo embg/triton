@@ -87,6 +87,7 @@ from .core import (
     pointer_type,
     nv_tma_desc_type,
     program_id,
+    cluster_ctarank,
     range,
     reduce,
     reshape,

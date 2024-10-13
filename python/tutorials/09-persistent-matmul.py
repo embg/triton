@@ -132,7 +132,10 @@ def matmul(a, b):
 
     c = torch.empty((M, N), device=a.device, dtype=dtype)
     # 1D launch kernel where each block gets its own program.
-    grid = lambda META: (triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"]), )
+    def grid(META):
+        result = (triton.cdiv(M, META['BLOCK_SIZE_M']) * triton.cdiv(N, META['BLOCK_SIZE_N']), )
+        result = [x + (-x % 4) for x in result]
+        return result
     matmul_kernel[grid](
         a, b, c,  #
         M, N, K,  #
@@ -194,7 +197,6 @@ def matmul_kernel_persistent(a_ptr, b_ptr, c_ptr,  #
             group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
             pid_m = first_pid_m + (tile_id % group_size_m)
             pid_n = (tile_id % num_pid_in_group) // group_size_m
-
             start_m = pid_m * BLOCK_SIZE_M
             start_n = pid_n * BLOCK_SIZE_N
             offs_am = start_m + tl.arange(0, BLOCK_SIZE_M)
@@ -237,14 +239,18 @@ def matmul_persistent(a, b):
     # Check constraints.
     assert a.shape[1] == b.shape[0], "Incompatible dimensions"
     assert a.dtype == b.dtype, "Incompatible dtypes"
-    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
+    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count - 12
     M, K = a.shape
     K, N = b.shape
     dtype = a.dtype
     # Allocates output.
     c = torch.empty((M, N), device=a.device, dtype=dtype)
     # 1D launch kernel where each block gets its own program.
-    grid = lambda META: (min(NUM_SMS, triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"])), )
+    def grid(META):
+        result = (min(NUM_SMS, triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"])), )
+        result = [x + (-x % 4) for x in result]
+        print(result)
+        return result
     matmul_kernel_persistent[grid](
         a, b, c,  #
         M, N, K,  #
@@ -271,18 +277,22 @@ def matmul_kernel_tma_persistent(a_desc_ptr, b_desc_ptr, c_desc_ptr,  #
                                  GROUP_SIZE_M: tl.constexpr,  #
                                  FP8_OUTPUT: tl.constexpr,  #
                                  NUM_SMS: tl.constexpr):  #
+    num_clusters = NUM_SMS // 4 # @nocommit
+    big_m = BLOCK_SIZE_M * 2
+    big_n = BLOCK_SIZE_N * 2
+    cluster_ctarank = tl.cluster_ctarank()
     dtype = tl.float8e4nv if FP8_OUTPUT else tl.float16
-    start_pid = tl.program_id(axis=0)
-    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
-    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
+    start_cid = tl.program_id(axis=0) // 4
+    num_cid_m = tl.cdiv(M, big_m)
+    num_cid_n = tl.cdiv(N, big_n)
     k_tiles = tl.cdiv(K, BLOCK_SIZE_K)
-    num_tiles = num_pid_m * num_pid_n
+    num_big_tiles = num_cid_m * num_cid_n
 
-    tiles_per_SM = num_tiles // NUM_SMS
-    if start_pid < num_tiles % NUM_SMS:
+    tiles_per_SM = num_big_tiles // num_clusters
+    if start_cid < num_big_tiles % num_clusters:
         tiles_per_SM += 1
 
-    tile_id = start_pid - NUM_SMS
+    big_tile_id = start_cid - num_clusters
     ki = -1
 
     pid_m = 0
@@ -290,27 +300,33 @@ def matmul_kernel_tma_persistent(a_desc_ptr, b_desc_ptr, c_desc_ptr,  #
     offs_am = 0
     offs_bn = 0
 
-    num_pid_in_group = GROUP_SIZE_M * num_pid_n
+    num_cid_in_group = GROUP_SIZE_M * num_cid_n
 
     accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
+    a = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_K), dtype=dtype)
+    b = tl.zeros((BLOCK_SIZE_N, BLOCK_SIZE_K), dtype=dtype)
 
     for _ in range(0, k_tiles * tiles_per_SM):
         ki = tl.where(ki == k_tiles - 1, 0, ki + 1)
         if ki == 0:
-            tile_id += NUM_SMS
-            group_id = tile_id // num_pid_in_group
-            first_pid_m = group_id * GROUP_SIZE_M
-            group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-            pid_m = first_pid_m + (tile_id % group_size_m)
-            pid_n = (tile_id % num_pid_in_group) // group_size_m
+            big_tile_id += num_clusters
+            group_id = big_tile_id // num_cid_in_group
+            first_cid_m = group_id * GROUP_SIZE_M
+            group_size_m = min(num_cid_m - first_cid_m, GROUP_SIZE_M)
+            cid_m = first_cid_m + (big_tile_id % group_size_m)
+            cid_n = (big_tile_id % num_cid_in_group) // group_size_m
+            pid_m = (cid_m * 2) + (cluster_ctarank // 2)
+            pid_n = (cid_n * 2) + (cluster_ctarank % 2)
 
             offs_am = pid_m * BLOCK_SIZE_M
             offs_bn = pid_n * BLOCK_SIZE_N
 
         offs_k = ki * BLOCK_SIZE_K
 
-        a = tl._experimental_descriptor_load(a_desc_ptr, [offs_am, offs_k], [BLOCK_SIZE_M, BLOCK_SIZE_K], dtype)
-        b = tl._experimental_descriptor_load(b_desc_ptr, [offs_bn, offs_k], [BLOCK_SIZE_N, BLOCK_SIZE_K], dtype)
+        # works
+        cta_mask = 1 << cluster_ctarank
+        a = tl._experimental_descriptor_load(a_desc_ptr, [offs_am, offs_k], [BLOCK_SIZE_M, BLOCK_SIZE_K], dtype, cta_mask)
+        b = tl._experimental_descriptor_load(b_desc_ptr, [offs_bn, offs_k], [BLOCK_SIZE_N, BLOCK_SIZE_K], dtype, cta_mask)
         accumulator = tl.dot(a, b.T, accumulator)
 
         if ki == k_tiles - 1:
@@ -353,9 +369,12 @@ def matmul_tma_persistent(a, b):
                                                                            configs[dtype]["BLOCK_SIZE_M"],
                                                                            configs[dtype]["BLOCK_SIZE_N"],
                                                                            c.element_size())
-    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
+    NUM_SMS = 120
 
-    grid = lambda META: (min(NUM_SMS, triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"])), )
+    def grid(META):
+        result = (min(NUM_SMS, triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"])), )
+        result = [x + (-x % 4) for x in result]
+        return result
     matmul_kernel_tma_persistent[grid](
         desc_a, desc_b, desc_c,  #
         M, N, K,  #
@@ -364,150 +383,6 @@ def matmul_tma_persistent(a, b):
         BLOCK_SIZE_K=configs[dtype]["BLOCK_SIZE_K"],  #
         GROUP_SIZE_M=configs[dtype]["GROUP_SIZE_M"],  #
         FP8_OUTPUT=dtype == torch.float8_e4m3fn,  #
-        NUM_SMS=NUM_SMS,  #
-        num_stages=configs[dtype]["num_stages"],  #
-        num_warps=configs[dtype]["num_warps"],  #
-    )
-    return c
-
-
-@triton.jit(launch_metadata=_matmul_launch_metadata)
-def matmul_kernel_device_tma_persistent(workspace_ptr,  #
-                                        tiles_per_update: tl.constexpr,  #
-                                        a_ptr, b_ptr, c_ptr,  #
-                                        M, N, K,  #
-                                        BLOCK_SIZE_M: tl.constexpr,  #
-                                        BLOCK_SIZE_N: tl.constexpr,  #
-                                        BLOCK_SIZE_K: tl.constexpr,  #
-                                        GROUP_SIZE_M: tl.constexpr,  #
-                                        NUM_SMS: tl.constexpr):  #
-    # Matmul using TMA and device-side descriptor creation
-    dtype = c_ptr.dtype.element_ty
-    start_pid = tl.program_id(axis=0)
-    num_pid_m = tl.cdiv(M, BLOCK_SIZE_M)
-    num_pid_n = tl.cdiv(N, BLOCK_SIZE_N)
-    k_tiles = tl.cdiv(K, BLOCK_SIZE_K)
-    num_tiles = num_pid_m * num_pid_n
-
-    TMA_SIZE: tl.constexpr = 128
-    workspace_base = workspace_ptr + start_pid * 3 * TMA_SIZE
-    a_desc_ptr = workspace_base
-    b_desc_ptr = workspace_base + TMA_SIZE
-    c_desc_ptr = workspace_base + 2 * TMA_SIZE
-
-    tl.extra.cuda.experimental_device_tensormap_create2d(desc_ptr=a_desc_ptr, global_address=a_ptr,
-                                                         load_size=[BLOCK_SIZE_M, BLOCK_SIZE_K], global_size=[M, K],
-                                                         element_ty=a_ptr.dtype.element_ty)
-    tl.extra.cuda.experimental_device_tensormap_create2d(desc_ptr=b_desc_ptr, global_address=b_ptr,
-                                                         load_size=[BLOCK_SIZE_N, BLOCK_SIZE_K], global_size=[N, K],
-                                                         element_ty=b_ptr.dtype.element_ty)
-    tl.extra.cuda.experimental_device_tensormap_create2d(desc_ptr=c_desc_ptr, global_address=c_ptr,
-                                                         load_size=[BLOCK_SIZE_M, BLOCK_SIZE_N], global_size=[M, N],
-                                                         element_ty=c_ptr.dtype.element_ty)
-    tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(a_desc_ptr)
-    tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(b_desc_ptr)
-    tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(c_desc_ptr)
-
-    tiles_per_SM = num_tiles // NUM_SMS
-    if start_pid < num_tiles % NUM_SMS:
-        tiles_per_SM += 1
-
-    tile_id = start_pid - NUM_SMS
-    ki = -1
-    ni = -1
-
-    pid_m = 0
-    pid_n = 0
-    offs_am = 0
-    offs_bn = 0
-
-    num_pid_in_group = GROUP_SIZE_M * num_pid_n
-
-    accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-
-    for _ in range(0, k_tiles * tiles_per_SM):
-        ki = tl.where(ki == k_tiles - 1, 0, ki + 1)
-        if ki == 0:
-            ni += 1
-
-            # Simulate a grouped gemm
-            if ni == tiles_per_update:
-                tl.extra.cuda.experimental_device_tensormap_create2d(desc_ptr=a_desc_ptr, global_address=a_ptr,
-                                                                     load_size=[BLOCK_SIZE_M,
-                                                                                BLOCK_SIZE_K], global_size=[M, K],
-                                                                     element_ty=a_ptr.dtype.element_ty)
-                tl.extra.cuda.experimental_device_tensormap_create2d(desc_ptr=b_desc_ptr, global_address=b_ptr,
-                                                                     load_size=[BLOCK_SIZE_N,
-                                                                                BLOCK_SIZE_K], global_size=[N, K],
-                                                                     element_ty=b_ptr.dtype.element_ty)
-                tl.extra.cuda.experimental_device_tensormap_create2d(desc_ptr=c_desc_ptr, global_address=c_ptr,
-                                                                     load_size=[BLOCK_SIZE_M,
-                                                                                BLOCK_SIZE_N], global_size=[M, N],
-                                                                     element_ty=c_ptr.dtype.element_ty)
-                tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(a_desc_ptr)
-                tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(b_desc_ptr)
-                tl.extra.cuda.experimental_tensormap_fenceproxy_acquire(c_desc_ptr)
-                ni = 0
-
-            tile_id += NUM_SMS
-            group_id = tile_id // num_pid_in_group
-            first_pid_m = group_id * GROUP_SIZE_M
-            group_size_m = min(num_pid_m - first_pid_m, GROUP_SIZE_M)
-            pid_m = first_pid_m + (tile_id % group_size_m)
-            pid_n = (tile_id % num_pid_in_group) // group_size_m
-
-            offs_am = pid_m * BLOCK_SIZE_M
-            offs_bn = pid_n * BLOCK_SIZE_N
-
-        offs_k = ki * BLOCK_SIZE_K
-
-        a = tl._experimental_descriptor_load(a_desc_ptr, [offs_am, offs_k], [BLOCK_SIZE_M, BLOCK_SIZE_K], dtype)
-        b = tl._experimental_descriptor_load(b_desc_ptr, [offs_bn, offs_k], [BLOCK_SIZE_N, BLOCK_SIZE_K], dtype)
-        accumulator = tl.dot(a, b.T, accumulator)
-
-        if ki == k_tiles - 1:
-            c = accumulator.to(dtype)
-
-            tl._experimental_descriptor_store(c_desc_ptr, c, [offs_am, offs_bn])
-
-            accumulator = tl.zeros((BLOCK_SIZE_M, BLOCK_SIZE_N), dtype=tl.float32)
-
-
-def matmul_device_tma_persistent(a, b, tiles_per_update):
-    # Autotuner does not work with TMA. Use manual config.
-    configs = {
-        torch.float8_e4m3fn: {
-            "BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 256, "BLOCK_SIZE_K": 128, "GROUP_SIZE_M": 8, "num_stages": 4,
-            "num_warps": 8
-        }, torch.float16: {
-            "BLOCK_SIZE_M": 128, "BLOCK_SIZE_N": 256, "BLOCK_SIZE_K": 64, "GROUP_SIZE_M": 8, "num_stages": 3,
-            "num_warps": 8
-        }
-    }
-
-    # Check constraints.
-    assert a.shape[1] == b.shape[1], "Incompatible dimensions"  # b is transposed
-    assert a.dtype == b.dtype, "Incompatible dtypes"
-
-    M, K = a.shape
-    N, K = b.shape
-    dtype = a.dtype
-
-    c = torch.empty((M, N), device=a.device, dtype=dtype)
-    NUM_SMS = torch.cuda.get_device_properties("cuda").multi_processor_count
-    tma_size = 128
-    workspace = torch.empty(NUM_SMS * 3 * tma_size, dtype=torch.uint8, device="cuda")
-
-    grid = lambda META: (min(NUM_SMS, triton.cdiv(M, META["BLOCK_SIZE_M"]) * triton.cdiv(N, META["BLOCK_SIZE_N"])), )
-    matmul_kernel_device_tma_persistent[grid](
-        workspace,  #
-        tiles_per_update,  #
-        a, b, c,  #
-        M, N, K,  #
-        BLOCK_SIZE_M=configs[dtype]["BLOCK_SIZE_M"],  #
-        BLOCK_SIZE_N=configs[dtype]["BLOCK_SIZE_N"],  #
-        BLOCK_SIZE_K=configs[dtype]["BLOCK_SIZE_K"],  #
-        GROUP_SIZE_M=configs[dtype]["GROUP_SIZE_M"],  #
         NUM_SMS=NUM_SMS,  #
         num_stages=configs[dtype]["num_stages"],  #
         num_warps=configs[dtype]["num_warps"],  #
@@ -569,11 +444,6 @@ def bench(K, dtype, tiles_per_update, reps=10):
         for _ in range(reps):
             matmul_tma_persistent(a, b)
             time.sleep(0.01)
-        with proton.scope(
-                f"matmul_kernel_device_tma_persistent [M={M}, N={N}, K={K}, tiles_per_update={tiles_per_update:02}]"):
-            for _ in range(reps):
-                matmul_device_tma_persistent(a, b, tiles_per_update)
-                time.sleep(0.01)
 
     proton.deactivate(0)
 
@@ -588,7 +458,6 @@ def validate(M, N, K, dtype, tiles_per_update):
     naive_result = matmul(a, b.T)
     persistent_result = matmul_persistent(a, b.T)
     tma_persistent_result = matmul_tma_persistent(a, b) if supports_tma() else None
-    device_tma_persistent_result = matmul_device_tma_persistent(a, b, tiles_per_update) if supports_tma() else None
 
     if torch_result is not None:
         naive_vs_torch = "✅" if torch.allclose(naive_result.to(torch.float16), torch_result.to(torch.float16),
@@ -601,9 +470,6 @@ def validate(M, N, K, dtype, tiles_per_update):
     if tma_persistent_result is not None:
         naive_vs_tma_persistent = "✅" if torch.allclose(cublas_result.to(torch.float16),
                                                         tma_persistent_result.to(torch.float16), atol=1.0) else "❌"
-    if device_tma_persistent_result is not None:
-        naive_vs_device_tma_persistent = "✅" if torch.allclose(cublas_result.to(
-            torch.float16), device_tma_persistent_result.to(torch.float16), atol=1.0) else "❌"
     print(f"M={M}, N={N}, K={K} verification naive vs: ", end="")
     if torch_result is not None:
         print(f"torch: {naive_vs_torch} ", end="")
@@ -612,8 +478,6 @@ def validate(M, N, K, dtype, tiles_per_update):
     print(f"persistent: {naive_vs_persistent} ", end="")
     if tma_persistent_result is not None:
         print(f"TMA persistent: {naive_vs_tma_persistent} ", end="")
-    if device_tma_persistent_result is not None:
-        print(f"Device TMA persistent: {naive_vs_device_tma_persistent} ", end="")
     print()
 
 

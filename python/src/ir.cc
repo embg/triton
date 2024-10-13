@@ -1253,10 +1253,11 @@ void init_triton_ir(py::module &&m) {
       .def("create_descriptor_load",
            [](TritonOpBuilder &self, Value desc_ptr,
               std::vector<Value> &indices, Type type,
+              Value cta_mask,
               CacheModifier cacheModifier,
               EvictionPolicy evictionPolicy) -> Value {
              return self.create<ExperimentalDescriptorLoadOp>(
-                 type, desc_ptr, indices, cacheModifier, evictionPolicy);
+                 type, desc_ptr, indices, cta_mask, cacheModifier, evictionPolicy);
            })
       .def("create_descriptor_store",
            [](TritonOpBuilder &self, Value desc_ptr, Value value,
@@ -1404,6 +1405,10 @@ void init_triton_ir(py::module &&m) {
              if (axis < 0 || axis > 3)
                throw pybind11::index_error("program_id must be in [0,3]");
              return self.create<GetNumProgramsOp>(axis);
+           })
+      .def("create_get_cluster_ctarank",
+           [](TritonOpBuilder &self) -> Value {
+             return self.create<GetClusterCtaRankOp>();
            })
       .def("create_dot",
            [](TritonOpBuilder &self, mlir::Value &a, mlir::Value &b,

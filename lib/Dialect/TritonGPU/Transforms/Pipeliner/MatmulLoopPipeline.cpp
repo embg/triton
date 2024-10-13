@@ -176,7 +176,7 @@ static void createTMAAsyncCopy(
 
   Value pred = builder.create<arith::ConstantIntOp>(loc, 1, 1);
   Operation *copy = builder.create<ttng::AsyncTMACopyGlobalToLocalOp>(
-      loc, loadOp.getDescPtr(), loadOp.getIndices(), barrier, view, pred);
+      loc, loadOp.getDescPtr(), loadOp.getIndices(), barrier, view, pred, loadOp.getCtaMask());
 
   bool isMMV3Load = loadToInfo[loadOp].loadIsMMAV3;
   auto [stage, cluster] = schedule[loadOp];

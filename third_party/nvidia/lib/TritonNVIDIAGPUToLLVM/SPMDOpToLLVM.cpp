@@ -33,10 +33,27 @@ struct GetNumProgramsOpConversion
   }
 };
 
+struct GetClusterCtaRankOpConversion
+    : public ConvertOpToLLVMPattern<triton::GetClusterCtaRankOp> {
+  using ConvertOpToLLVMPattern<
+      triton::GetClusterCtaRankOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(triton::GetClusterCtaRankOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op->getLoc();
+    std::string sreg = "%cluster_ctarank";
+    Value rank = LLVM::NVIDIA::getSRegValue(rewriter, loc, sreg);
+    rewriter.replaceOp(op, rank);
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::triton::NVIDIA::populateSPMDOpToLLVMPattern(
     LLVMTypeConverter &typeConverter, RewritePatternSet &patterns,
     PatternBenefit benefit) {
   patterns.add<GetNumProgramsOpConversion>(typeConverter, benefit);
+  patterns.add<GetClusterCtaRankOpConversion>(typeConverter, benefit);
 }

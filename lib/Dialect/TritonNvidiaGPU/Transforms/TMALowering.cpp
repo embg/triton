@@ -59,7 +59,7 @@ public:
     rewriter.create<triton::nvidia_gpu::BarrierExpectOp>(loc, barrierAlloc,
                                                          sizeInBytes, pred);
     rewriter.create<triton::nvidia_gpu::AsyncTMACopyGlobalToLocalOp>(
-        loc, op.getDescPtr(), op.getIndices(), barrierAlloc, alloc, pred);
+        loc, op.getDescPtr(), op.getIndices(), barrierAlloc, alloc, pred, op.getCtaMask());
     Value phase = rewriter.create<arith::ConstantIntOp>(loc, 0, 32);
     rewriter.create<WaitBarrierOp>(loc, barrierAlloc, phase);
     rewriter.create<InvalBarrierOp>(loc, barrierAlloc);

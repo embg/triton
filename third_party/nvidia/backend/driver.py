@@ -208,20 +208,21 @@ static cuLaunchKernelEx_t getLaunchKernelExHandle() {{
 static void _launch(int gridX, int gridY, int gridZ, int num_warps, int num_ctas, int clusterDimX, int clusterDimY, int clusterDimZ, int shared_memory, CUstream stream, CUfunction function{', ' + arg_decls if len(arg_decls) > 0 else ''}) {{
   void *params[] = {{ {', '.join(f"&arg{i}" for i in params)} }};
   if (gridX*gridY*gridZ > 0) {{
-    if (num_ctas == 1) {{
+    if (0) {{
       CUDA_CHECK(cuLaunchKernel(function, gridX, gridY, gridZ, 32*num_warps, 1, 1, shared_memory, stream, params, 0));
     }} else {{
-      CUlaunchAttribute launchAttr[2];
+      CUlaunchAttribute launchAttr[3];
       launchAttr[0].id = CU_LAUNCH_ATTRIBUTE_CLUSTER_DIMENSION;
-      launchAttr[0].value.clusterDim.x = clusterDimX;
-      launchAttr[0].value.clusterDim.y = clusterDimY;
-      launchAttr[0].value.clusterDim.z = clusterDimZ;
+      launchAttr[0].value.clusterDim.x = 4; // very interesting: cooperative launch fails for 4, but succeeds for 2. which means it can't schedule 132 SMs with 4 CTAs per cluster!
+      launchAttr[0].value.clusterDim.y = 1; // can we have y = 2 ?
+      // seems like you need exactly 120 SMs!
+      launchAttr[0].value.clusterDim.z = 1;
       launchAttr[1].id = CU_LAUNCH_ATTRIBUTE_CLUSTER_SCHEDULING_POLICY_PREFERENCE;
-      launchAttr[1].value.clusterSchedulingPolicyPreference = CU_CLUSTER_SCHEDULING_POLICY_SPREAD;
+      launchAttr[1].value.clusterSchedulingPolicyPreference = CU_CLUSTER_SCHEDULING_POLICY_LOAD_BALANCING;
       CUlaunchConfig config;
-      config.gridDimX = gridX * clusterDimX;
-      config.gridDimY = gridY * clusterDimY;
-      config.gridDimZ = gridZ * clusterDimZ;
+      config.gridDimX = gridX;
+      config.gridDimY = gridY;
+      config.gridDimZ = gridZ;
       config.blockDimX = 32 * num_warps;
       config.blockDimY = 1;
       config.blockDimZ = 1;

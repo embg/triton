@@ -615,6 +615,11 @@ def TT_GetProgramIdOp : TT_Op<"get_program_id", [Pure]> {
     }];
 }
 
+def TT_GetClusterCtaRankOp : TT_Op<"get_cluster_ctarank", [Pure]> {
+    let arguments = (ins );
+    let results = (outs I32:$result);
+}
+
 def TT_GetNumProgramsOp : TT_Op<"get_num_programs", [Pure]> {
     let arguments = (ins TT_ProgramDim:$axis);
 
@@ -1127,6 +1132,7 @@ def TT_ExperimentalDescriptorLoadOp : TT_Op<"experimental_descriptor_load", [
       ins
       TT_PtrType:$desc_ptr,
       Variadic<I32>:$indices,
+      I32:$cta_mask,
       DefaultValuedAttr<TT_CacheModifierAttr, "::mlir::triton::CacheModifier::NONE">:$cache,
       DefaultValuedAttr<TT_EvictionPolicyAttr, "::mlir::triton::EvictionPolicy::NORMAL">:$evict
     );
@@ -1134,13 +1140,13 @@ def TT_ExperimentalDescriptorLoadOp : TT_Op<"experimental_descriptor_load", [
     let results = (outs TT_Tensor:$result);
 
     let assemblyFormat = [{
-      $desc_ptr `[` $indices `]`
+      $desc_ptr `[` $indices `]` `,` $cta_mask
       oilist(
         `cacheModifier` `=` $cache |
         `evictionPolicy` `=` $evict
       )
       attr-dict `:` qualified(type($desc_ptr)) `->` type($result)
-    }];
+    }];  /// @nocommit cta_mask
 }
 
 def TT_ExperimentalDescriptorStoreOp : TT_Op<"experimental_descriptor_store", [
