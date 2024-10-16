@@ -19,8 +19,8 @@
 )
 .reqntid 256, 1, 1
 {
-	.reg .pred 	%p<48>;
-	.reg .b16 	%rs<136>;
+	.reg .pred 	%p<60>;
+	.reg .b16 	%rs<137>;
 	.reg .b32 	%r<349>;
 	.reg .f32 	%f<2475>;
 	.reg .b64 	%rd<29>;
@@ -43,6 +43,25 @@ $L__tmp0:
 	// begin inline asm
 	mov.u32 %r62, %cluster_ctarank;
 	// end inline asm
+	
+	// begin embg asm
+	// 0 => 0,1, load tile A0, calc A0 @ B0, 0b0011
+	// 1 => 1,3, load tile B1, calc A0 @ B1, 0b1010
+	// 2 => 2,0, load tile B0, calc A1 @ B0, 0b0101
+	// 3 => 3,2, load tile A1, calc A1 @ B1, 0b1100
+
+	setp.eq.u32 %p48, %r62, 0; // %p48 = cluster_ctarank == 0
+	setp.eq.u32 %p49, %r62, 1; // %p49 = cluster_ctarank == 1
+	setp.eq.u32 %p50, %r62, 2; // %p50 = cluster_ctarank == 2
+	setp.eq.u32 %p51, %r62, 3; // %p51 = cluster_ctarank == 3
+	or.pred %p52, %p48, %p51; // %p52 = %p48 || %p51 // 0 or 3
+	or.pred %p53, %p49, %p50; // %p53 = %p49 || %p50 // 1 or 2
+	@%p48 mov.u16 %rs136, 3; // 0b0011
+	@%p49 mov.u16 %rs136, 10; // 0b1010
+	@%p50 mov.u16 %rs136, 5; // 0b0101
+	@%p51 mov.u16 %rs136, 12; // 0b1100
+	// end embg asm
+	
 	.loc	1 285 30                        // 09-persistent-matmul.py:285:30
 	// begin inline asm
 	mov.u32 %r63, %ctaid.x;
@@ -149,6 +168,8 @@ $L__tmp3:
 	add.s32 	%r335, %r125, %r9;
 	.loc	1 309 22                        // 09-persistent-matmul.py:309:22
 	bar.sync 	0;
+	barrier.cluster.arrive.aligned;
+	barrier.cluster.wait.aligned;
 	and.pred  	%p8, %p44, %p13;
 	// begin inline asm
 	@%p8 mbarrier.arrive.expect_tx.shared.b64 _, [%r64], 49152;
@@ -165,13 +186,15 @@ $L__tmp3:
 	cvt.u16.u32 	%rs6, %r109;
 	mov.b32 	%r69, 0;
 	// begin inline asm
-	@%p10 cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes.multicast::cluster [%r68], [%rd22, {%r69, %r336}], [%r64], %rs6;
+	and.pred %p54, %p10, %p52;
+	@%p54 cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes.multicast::cluster [%r68], [%rd22, {%r69, %r336}], [%r64], %rs136;
 	// end inline asm
 	.loc	1 329 113                       // 09-persistent-matmul.py:329:113
 	shfl.sync.idx.b32	%r127, %r11, 0, 31, -1;
 	add.s32 	%r72, %r68, 49152;
 	// begin inline asm
-	@%p10 cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes.multicast::cluster [%r72], [%rd23, {%r69, %r335}], [%r64], %rs6;
+	and.pred %p55, %p10, %p53;
+	@%p55 cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes.multicast::cluster [%r72], [%rd23, {%r69, %r335}], [%r64], %rs136;
 	// end inline asm
 	.loc	1 310 0                         // 09-persistent-matmul.py:310:0
 	setp.ne.s32 	%p16, %r4, 0;
@@ -221,13 +244,15 @@ $L__BB0_2:
 	and.pred  	%p18, %p15, %p24;
 	add.s32 	%r142, %r68, 16384;
 	// begin inline asm
-	@%p18 cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes.multicast::cluster [%r142], [%rd22, {%r331, %r342}], [%r141], %rs6;
+	and.pred %p56, %p18, %p52;
+	@%p56 cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes.multicast::cluster [%r142], [%rd22, {%r331, %r342}], [%r141], %rs136;
 	// end inline asm
 	.loc	1 329 113                       // 09-persistent-matmul.py:329:113
 	shfl.sync.idx.b32	%r152, %r11, 0, 31, -1;
 	add.s32 	%r146, %r68, 81920;
 	// begin inline asm
-	@%p18 cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes.multicast::cluster [%r146], [%rd23, {%r331, %r341}], [%r141], %rs6;
+	and.pred %p57, %p18, %p53;
+	@%p57 cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes.multicast::cluster [%r146], [%rd23, {%r331, %r341}], [%r141], %rs136;
 	// end inline asm
 	mov.f32 	%f2219, 0f00000000;
 	mov.f32 	%f2220, %f2219;
@@ -720,14 +745,16 @@ $L__BB0_6:                              //   in Loop: Header=BB0_4 Depth=1
 	and.pred  	%p41, %p9, %p36;
 	and.pred  	%p34, %p15, %p41;
 	// begin inline asm
-	@%p34 cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes.multicast::cluster [%r228], [%rd22, {%r229, %r347}], [%r227], %rs6;
+	and.pred %p58, %p34, %p52;
+	@%p58 cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes.multicast::cluster [%r228], [%rd22, {%r229, %r347}], [%r227], %rs136;
 	// end inline asm
 	.loc	1 329 113                       // 09-persistent-matmul.py:329:113
 	shl.b32 	%r253, %r340, 15;
 	add.s32 	%r232, %r72, %r253;
 	shfl.sync.idx.b32	%r254, %r11, 0, 31, -1;
 	// begin inline asm
-	@%p34 cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes.multicast::cluster [%r232], [%rd23, {%r229, %r348}], [%r227], %rs6;
+	and.pred %p59, %p34, %p53;
+	@%p59 cp.async.bulk.tensor.2d.shared::cluster.global.mbarrier::complete_tx::bytes.multicast::cluster [%r232], [%rd23, {%r229, %r348}], [%r227], %rs136;
 	// end inline asm
 	.loc	1 332 17                        // 09-persistent-matmul.py:332:17
 	setp.ne.s32 	%p47, %r337, %r4;
@@ -1163,6 +1190,8 @@ $L__BB0_9:                              // %._crit_edge
 	cp.async.wait_group 0x0;
 	// end inline asm
 	bar.sync 	0;
+	barrier.cluster.arrive.aligned;
+	barrier.cluster.wait.aligned;
 	// begin inline asm
 	@%p44 mbarrier.inval.shared::cta.b64 [%r64];
 	// end inline asm
