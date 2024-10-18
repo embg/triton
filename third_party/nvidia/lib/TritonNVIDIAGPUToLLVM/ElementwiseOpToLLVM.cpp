@@ -6,6 +6,7 @@
 #include "triton/Conversion/TritonGPUToLLVM/ElementwiseOpToLLVMBase.h"
 #include "triton/Conversion/TritonGPUToLLVM/PatternTritonGPUOpToLLVM.h"
 #include "triton/Conversion/TritonGPUToLLVM/Utility.h"
+#include <stdio.h>
 
 using namespace mlir::triton::gpu;
 
@@ -374,17 +375,17 @@ struct FpToFpOpConversion
     return builder.launch(rewriter, loc, bf16_ty, false);
   }
 
-  static Value convertFp32ToFp16(Location loc,
+  static SmallVector<Value> convertFp32ToFp16(Location loc,
                                  ConversionPatternRewriter &rewriter,
-                                 const Value &v, const RoundingMode rounding) {
+                                 SmallVector<Value> values, const RoundingMode rounding) {
     PTXBuilder builder;
     StringRef ptx;
     switch (rounding) {
     case RoundingMode::RTNE:
-      ptx = "cvt.rn.f16.f32";
+      ptx = "cvt.rn.f16x2.f32";
       break;
     case RoundingMode::RTZ:
-      ptx = "cvt.rz.f16.f32";
+      ptx = "cvt.rz.f16x2.f32";
       break;
     default:
       llvm::errs() << "WARNING: unsupported rounding mode for f32->f16 "
@@ -393,10 +394,17 @@ struct FpToFpOpConversion
       llvm_unreachable("");
     }
     auto &cvt = *builder.create(ptx.str());
-    auto res = builder.newOperand("=h");
-    auto operand = builder.newOperand(v, "r");
-    cvt(res, operand);
-    return builder.launch(rewriter, loc, f16_ty, false);
+    auto res = builder.newOperand("=r");
+    assert(values.size() == 2);
+    auto operand1 = builder.newOperand(values[0], "f");
+    auto operand2 = builder.newOperand(values[1], "f");
+    cvt(res, operand1, operand2);
+    auto packed = builder.launch(rewriter, loc, vec_ty(f16_ty, 2), false);
+    
+    SmallVector<Value> result;
+    result.push_back(extract_element(f16_ty, packed, i32_val(0)));
+    result.push_back(extract_element(f16_ty, packed, i32_val(1)));
+    return result;
   }
 
   std::pair<ConverterT, size_t>
@@ -485,9 +493,15 @@ struct FpToFpOpConversion
       assert(roundingMode.has_value() &&
              "rounding mode must be specified for fp32->fp16 conversion");
       SmallVector<Value> outVals;
-      for (Value v : operands[0]) {
-        outVals.push_back(
-            convertFp32ToFp16(loc, rewriter, v, roundingMode.value()));
+      for (int i = 0; i < operands.size(); i += 2) {
+        printf("operands.size(): %zu\n", operands.size());
+        printf("operands[0].size(): %zu\n", operands[0].size());
+        SmallVector<Value> inVals = {operands[i][0], operands[i+1][0]};
+        SmallVector<Value> thisOutVals =
+            convertFp32ToFp16(loc, rewriter, inVals, roundingMode.value());
+        for (Value v : thisOutVals) {
+          outVals.push_back(v);
+        }
       }
       return outVals;
     }
@@ -517,9 +531,7 @@ struct FpToFpOpConversion
     for (unsigned i = 0; i < std::min(numElements, operands.size()); i++) {
       inVals.push_back(operands[i][0]);
     }
-    if (useFP16IntermediateSrc)
-      for (Value &v : inVals)
-        v = convertFp32ToFp16(loc, rewriter, v, RoundingMode::RTZ);
+    // @nocommit
     inVals.resize(numElements, undef(typeConverter->convertType(srcType)));
     SmallVector<Value> outVals = cvtFunc(loc, rewriter, inVals);
     assert(outVals.size() == inVals.size());

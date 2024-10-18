@@ -879,7 +879,8 @@ def cast(input: tl.tensor, dst_ty: tl.dtype, builder: ir.builder,
         dst_sca_ty.is_floating() and \
         src_sca_ty.primitive_bitwidth > dst_sca_ty.primitive_bitwidth
     if truncate_fp:
-        return tl.tensor(builder.create_fp_trunc(input.handle, dst_ty.to_ir(builder)), dst_ty)
+        print("IT'S HAPPENING")
+        return tl.tensor(builder.create_fp_to_fp(input.handle, dst_ty.to_ir(builder), ir.ROUNDING_MODE.RTNE), dst_ty)
 
     # Standard floating types' casting: extension
     #   fp32 => fp64
